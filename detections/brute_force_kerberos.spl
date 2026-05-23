@@ -1,0 +1,64 @@
+# Kerberos Brute Force Detection — AD Environment (Event IDs 4771 + 4768)
+# Detects high-volume Kerberos pre-authentication failures followed by success
+# Developed and tested in Phase 2 of the SOC Home Lab
+#
+# MITRE ATT&CK: T1110 — Brute Force
+# Log source: Windows Server 2022 Domain Controller (DC-01) via Splunk UF
+
+# ---------------------------------------------------------------
+# QUERY 1 — Volume of Kerberos failures per account and source IP
+# ---------------------------------------------------------------
+
+index=* host=DC-01 EventCode=4771
+| stats count by Account_Name, Client_Address
+| where count >= 5
+| sort - count
+
+# ---------------------------------------------------------------
+# QUERY 2 — Brute force success correlation
+# Identifies accounts with prior 4771 failures that then generated a 4768 success
+# ---------------------------------------------------------------
+
+index=* host=DC-01 EventCode IN (4771, 4768)
+| eval result=case(
+    EventCode=4768 AND Result_Code="0x0", "SUCCESS",
+    EventCode=4768,                        "FAILURE",
+    EventCode=4771,                        "FAILURE")
+| stats
+    count(eval(result="FAILURE")) as failures,
+    count(eval(result="SUCCESS")) as successes
+    by Account_Name, Client_Address
+| where failures >= 5 AND successes >= 1
+| sort - failures
+
+# NOTE: 4768 is logged for BOTH successful and failed TGT requests, so a
+# 4768 alone does NOT mean authentication succeeded. Success is gated on
+# Result_Code=0x0. Without this filter, even Kerbrute userenum (which
+# generates 4768) would be mis-scored as a successful compromise.
+# Field name may be Result_Code or Status depending on your field extraction.
+
+# ---------------------------------------------------------------
+# QUERY 3 — Timeline view (chronological sequence)
+# Useful for triage — shows the exact moment brute force succeeded
+# ---------------------------------------------------------------
+
+index=* host=DC-01 EventCode IN (4771, 4768)
+| table _time, EventCode, Account_Name, Client_Address
+| sort _time
+
+# ---------------------------------------------------------------
+# FIELD REFERENCE
+# ---------------------------------------------------------------
+# Account_Name    — targeted domain account
+# Client_Address  — source IP of the authentication attempt
+# EventCode 4771  — Kerberos pre-authentication failed
+# EventCode 4768  — Kerberos TGT requested (success or failure)
+#
+# ---------------------------------------------------------------
+# TRIAGE NOTES
+# ---------------------------------------------------------------
+# - High volume of 4771 from a single Client_Address = brute force pattern
+# - 4768 success following a 4771 series = compromise confirmed
+# - Client_Address outside known corporate ranges = escalate immediately
+# - A 4768 SUCCESS (Result_Code=0x0) right after a 4771 burst from the same
+#   Client_Address = the brute force found the password — escalate immediately

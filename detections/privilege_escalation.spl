@@ -1,0 +1,47 @@
+# Privilege Escalation Detection — Privileged Group Membership (Event IDs 4728 / 4732 / 4756)
+# Detects additions to security-enabled groups across ALL scopes:
+#   4728 = global group   (e.g. Domain Admins, Enterprise Admins is universal)
+#   4732 = local group    (e.g. Administrators builtin, *Operators groups)
+#   4756 = universal group (e.g. Enterprise Admins)
+# Filtering only 4728 silently misses additions to Administrators and the
+# *Operators groups, which are domain-local and logged as 4732.
+# Developed and tested in Phase 2 of the SOC Home Lab
+#
+# MITRE ATT&CK: T1098 — Account Manipulation
+# Log source: Windows Server 2022 Domain Controller (DC-01) via Splunk UF
+
+# ---------------------------------------------------------------
+# QUERY 1 — All privileged group membership additions (all scopes)
+# ---------------------------------------------------------------
+
+index=* host=DC-01 EventCode IN (4728, 4732, 4756)
+| eval group_scope=case(EventCode=4728, "global", EventCode=4732, "local", EventCode=4756, "universal")
+| table _time, EventCode, group_scope, Account_Name, Member_Security_ID, Group_Name
+| sort - _time
+
+# ---------------------------------------------------------------
+# QUERY 2 — Filter for high-value groups only
+# ---------------------------------------------------------------
+
+index=* host=DC-01 EventCode IN (4728, 4732, 4756)
+| where like(Group_Name, "%Admin%") OR like(Group_Name, "%Operators%") OR like(Group_Name, "%Enterprise%")
+| eval group_scope=case(EventCode=4728, "global", EventCode=4732, "local", EventCode=4756, "universal")
+| table _time, EventCode, group_scope, Account_Name, Member_Security_ID, Group_Name
+| sort - _time
+
+# ---------------------------------------------------------------
+# FIELD REFERENCE
+# ---------------------------------------------------------------
+# Account_Name      — account that performed the action (who added)
+# Member_Security_ID — SID of the account that was added
+# Group_Name        — target group (e.g. Domain Admins)
+#
+# ---------------------------------------------------------------
+# TRIAGE NOTES
+# ---------------------------------------------------------------
+# - Any addition to Domain Admins outside a change management window = critical alert
+# - Account_Name performing the action should be a known admin account
+# - Unexpected executor (e.g. service account, standard user) = likely compromise
+# - Cross-reference with 4769 (Kerberoasting) preceding this event
+#   to determine if the executor account was itself compromised
+# - 4728 at unusual hours (nights, weekends) = high priority investigation

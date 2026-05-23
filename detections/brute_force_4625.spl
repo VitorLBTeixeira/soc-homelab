@@ -1,0 +1,43 @@
+# Brute Force Detection — Windows Login (Event ID 4625)
+# Detects multiple failed login attempts from the same account
+# Threshold: 5 or more failures within the search window (tune to your noise floor)
+# Developed and tested in Phase 1 of the SOC Home Lab
+
+# MITRE ATT&CK: T1110 — Brute Force
+# Log source: Windows Security Event Log via Splunk Universal Forwarder
+
+index=* EventCode=4625
+| eval hms=strftime(_time, "%H:%M:%S")
+| eval user=mvindex(Account_Name, -1)
+| eval src_addr=coalesce(Source_Network_Address, Workstation_Name, "unknown")
+| stats count,
+        earliest(hms) as first_seen,
+        latest(hms)   as last_seen
+        by user, src_addr, ComputerName, Logon_Type
+| where count >= 5
+| sort - count
+
+# ---------------------------------------------------------------
+# FIELD REFERENCE
+# ---------------------------------------------------------------
+# user          — targeted account. 4625 carries TWO Account_Name values
+#                 (the subject that requested logon + the target account);
+#                 default extraction makes Account_Name multivalue, so we take
+#                 the last value (the account that failed to log in).
+# src_addr      — source of the attempt: Source_Network_Address (network/RDP)
+#                 or Workstation_Name (interactive). This is the field you
+#                 actually pivot on for brute force — a single source hitting
+#                 many failures is the signal.
+# ComputerName  — machine where the failure was recorded
+# Logon_Type    — 2 = interactive, 3 = network, 10 = remote (RDP)
+# count         — number of failures in the search window
+# first_seen / last_seen — timeframe of the activity
+#
+# ---------------------------------------------------------------
+# TRIAGE NOTES
+# ---------------------------------------------------------------
+# - Account_Name ending in $ is a machine account → likely false positive
+# - Logon_Type 2 (interactive) from an unexpected host = high priority
+# - Logon_Type 3 (network) in volume from a single source IP = investigate
+# - Cross-reference with 4624 (successful logon) after failures
+#   to confirm whether brute force succeeded
